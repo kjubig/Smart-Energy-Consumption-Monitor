@@ -1,0 +1,12 @@
+services:
+  kafka:
+    environment:
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://${PUBLIC_IP}:9092
+
+  producer:
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=${PUBLIC_IP}:9092
+
+  spark-submit:
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=${PUBLIC_IP}:9092
