@@ -1,0 +1,44 @@
+services:
+  zookeeper:
+    image: bitnami/zookeeper:3.9
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+
+  kafka:
+    image: bitnami/kafka:3.6
+    depends_on: [zookeeper]
+    ports: ["9092:9092"]
+    environment:
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092   # lokalnie
+      - ALLOW_PLAINTEXT_LISTENER=yes
+
+  producer:
+    build: ./producer
+    command: ["python","simulator.py"]
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - TOPIC_INPUT=energy_readings
+    depends_on: [kafka]
+
+  spark-submit:
+    image: bitnami/spark:3.5
+    depends_on: [kafka]
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - TOPIC_INPUT=energy_readings
+      - TOPIC_ALERTS=energy_alerts
+      - WINDOW_SEC=60
+      - SLIDE_SEC=15
+      - THRESHOLD_KWH=0.05
+      - CHECKPOINT_BASE=file:///tmp/chk
+    volumes:
+      - ./spark:/opt/app
+    ports:
+      - "4040:4040"
+    command: >
+      /opt/bitnami/spark/bin/spark-submit
+      --master local[*]
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0
+      /opt/app/stream.py
