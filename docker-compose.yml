@@ -1,44 +1,85 @@
 services:
-  zookeeper:
-    image: bitnami/zookeeper:3.9
-    environment:
-      - ALLOW_ANONYMOUS_LOGIN=yes
-
   kafka:
-    image: bitnami/kafka:3.6
-    depends_on: [zookeeper]
-    ports: ["9092:9092"]
+    image: bitnami/kafka:3.7
+    container_name: kafka
     environment:
-      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
-      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092
-      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092   # lokalnie
+      - KAFKA_ENABLE_KRAFT=yes
+      - KAFKA_CFG_PROCESS_ROLES=broker,controller
+      - KAFKA_CFG_NODE_ID=1
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
       - ALLOW_PLAINTEXT_LISTENER=yes
+    ports: ["9092:9092"]
+    networks: [ smarthub ]
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "/opt/bitnami/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+
+  spark-master:
+    image: apache/spark:3.5.1
+    container_name: spark-master
+    command: [ "/bin/bash", "-lc", "/opt/spark/bin/spark-class org.apache.spark.deploy.master.Master" ]
+    environment: [ "SPARK_NO_DAEMONIZE=true" ]
+    ports: ["7077:7077", "8080:8080"]   # UI mastera na 8080 (opcjonalnie)
+    networks: [ smarthub ]
+
+  spark-worker:
+    image: apache/spark:3.5.1
+    container_name: spark-worker
+    command: [ "/bin/bash", "-lc", "/opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077" ]
+    environment: [ "SPARK_NO_DAEMONIZE=true" ]
+    depends_on: [ spark-master ]
+    networks: [ smarthub ]
 
   producer:
     build: ./producer
-    command: ["python","simulator.py"]
+    container_name: producer
     environment:
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - TOPIC_INPUT=energy_readings
-    depends_on: [kafka]
+      - BOOTSTRAP_SERVERS=kafka:9092
+      - TOPIC=energy_readings
+      - HOUSEHOLDS=50
+      - TICK_SECONDS=15
+      - SPEEDUP=30
+      - JITTER_PCT=10
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks: [ smarthub ]
 
   spark-submit:
-    image: bitnami/spark:3.5
-    depends_on: [kafka]
+    image: apache/spark:3.5.1
+    container_name: spark-submit
+    depends_on: [ spark-master, spark-worker, kafka ]
     environment:
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - TOPIC_INPUT=energy_readings
-      - TOPIC_ALERTS=energy_alerts
-      - WINDOW_SEC=60
-      - SLIDE_SEC=15
-      - THRESHOLD_KWH=0.05
-      - CHECKPOINT_BASE=file:///tmp/chk
+      - RUN_MODE=demo             # << na demo szybciej widać wyniki; potem możesz zmienić na prod
+      - PYSPARK_PYTHON=python3
+      - ALERTS_CONSOLE=0
+      - CHECKPOINT_ROOT=/tmp/chk
     volumes:
-      - ./spark:/opt/app
+      - ./spark:/app
     ports:
-      - "4040:4040"
-    command: >
-      /opt/bitnami/spark/bin/spark-submit
-      --master local[*]
-      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0
-      /opt/app/stream.py
+      - "4040:4040"               # << DODANE: Spark UI
+    command:
+      - /bin/bash
+      - -lc
+      - >
+        mkdir -p /tmp/.ivy2/cache /tmp/chk &&
+        /opt/spark/bin/spark-submit
+        --master spark://spark-master:7077
+        --conf spark.driver.extraJavaOptions="-Duser.home=/tmp -Divy.home=/tmp/.ivy2 -Divy.cache.dir=/tmp/.ivy2/cache"
+        --conf spark.executor.extraJavaOptions="-Duser.home=/tmp -Divy.home=/tmp/.ivy2 -Divy.cache.dir=/tmp/.ivy2/cache"
+        --conf spark.sql.session.timeZone=UTC
+        --conf spark.sql.shuffle.partitions=4
+        --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1
+        /app/stream.py
+
+networks:
+  smarthub: {}
