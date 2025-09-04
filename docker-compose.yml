@@ -88,6 +88,21 @@ services:
         --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1
         /app/stream.py
     restart: unless-stopped
+  ui:
+    build: ./ui
+    container_name: ui
+    environment:
+      - BOOTSTRAP_SERVERS=kafka:9092
+      - ALERTS_TOPIC=energy_alerts
+      - MAX_ROWS=5000
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks: [ smarthub ]
+    ports: ["8501:8501"]
+    restart: unless-stopped
+
+    
 
 networks:
   smarthub: {}
