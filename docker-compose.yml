@@ -1,3 +1,5 @@
+# docker-compose.yml (fragmenty)
+
 services:
   kafka:
     image: bitnami/kafka:3.7
@@ -8,7 +10,7 @@ services:
       - KAFKA_CFG_NODE_ID=1
       - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
       - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
-      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092   # ← ważne: host 'kafka'
       - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
       - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
       - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
@@ -22,14 +24,16 @@ services:
       timeout: 3s
       retries: 30
       start_period: 20s
+    restart: unless-stopped
 
   spark-master:
     image: apache/spark:3.5.1
     container_name: spark-master
     command: [ "/bin/bash", "-lc", "/opt/spark/bin/spark-class org.apache.spark.deploy.master.Master" ]
     environment: [ "SPARK_NO_DAEMONIZE=true" ]
-    ports: ["7077:7077", "8080:8080"]   # UI mastera na 8080 (opcjonalnie)
+    ports: ["7077:7077", "8080:8080"]
     networks: [ smarthub ]
+    restart: unless-stopped
 
   spark-worker:
     image: apache/spark:3.5.1
@@ -38,6 +42,7 @@ services:
     environment: [ "SPARK_NO_DAEMONIZE=true" ]
     depends_on: [ spark-master ]
     networks: [ smarthub ]
+    restart: unless-stopped
 
   producer:
     build: ./producer
@@ -53,20 +58,22 @@ services:
       kafka:
         condition: service_healthy
     networks: [ smarthub ]
+    restart: unless-stopped
 
   spark-submit:
     image: apache/spark:3.5.1
     container_name: spark-submit
     depends_on: [ spark-master, spark-worker, kafka ]
     environment:
-      - RUN_MODE=demo             # << na demo szybciej widać wyniki; potem możesz zmienić na prod
+      - RUN_MODE=demo
       - PYSPARK_PYTHON=python3
       - ALERTS_CONSOLE=0
       - CHECKPOINT_ROOT=/tmp/chk
     volumes:
       - ./spark:/app
     ports:
-      - "4040:4040"               # << DODANE: Spark UI
+      - "4040:4040"
+    networks: [ smarthub ]            # ← DODAJ TO
     command:
       - /bin/bash
       - -lc
@@ -80,6 +87,7 @@ services:
         --conf spark.sql.shuffle.partitions=4
         --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1
         /app/stream.py
+    restart: unless-stopped
 
 networks:
   smarthub: {}
