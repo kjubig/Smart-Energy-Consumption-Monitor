@@ -94,6 +94,7 @@ services:
     environment:
       - BOOTSTRAP_SERVERS=kafka:9092
       - ALERTS_TOPIC=energy_alerts
+      - READINGS_TOPIC=energy_readings
       - MAX_ROWS=5000
     depends_on:
       kafka:
