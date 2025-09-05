@@ -67,7 +67,7 @@ services:
     environment:
       - RUN_MODE=demo
       - PYSPARK_PYTHON=python3
-      - ALERTS_CONSOLE=1
+      - ALERTS_CONSOLE=0
       - CHECKPOINT_ROOT=/tmp/chk
     volumes:
       - ./spark:/app
