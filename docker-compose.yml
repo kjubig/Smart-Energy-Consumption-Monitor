@@ -65,7 +65,7 @@ services:
     container_name: spark-submit
     depends_on: [ spark-master, spark-worker, kafka ]
     environment:
-      - RUN_MODE=demo
+      - RUN_MODE=prod
       - PYSPARK_PYTHON=python3
       - ALERTS_CONSOLE=0
       - CHECKPOINT_ROOT=/tmp/chk
