@@ -1,113 +1,104 @@
-import os, json, time, threading
-import pandas as pd
-import streamlit as st
+import os, json, time, pandas as pd, streamlit as st
 from kafka import KafkaConsumer
 
-# --- ENV ---
 BOOTSTRAP = os.getenv("BOOTSTRAP_SERVERS", "kafka:9092")
-TOPIC = os.getenv("ALERTS_TOPIC", os.getenv("TOPIC", "energy_alerts"))
-MAX_ROWS = int(os.getenv("MAX_ROWS", "5000"))
+ALERTS_TOPIC = os.getenv("ALERTS_TOPIC", "energy_alerts")
+READINGS_TOPIC = os.getenv("READINGS_TOPIC", "energy_readings")
+MAX_ROWS = int(os.getenv("MAX_ROWS", "2000"))
 
-# --- UI ---
-st.set_page_config(page_title="Smart Energy – Alerts", layout="wide")
-st.title("⚡ Smart Energy – Alerty zużycia")
-st.caption(f"Kafka: `{BOOTSTRAP}` • Topic: `{TOPIC}`")
+st.set_page_config(page_title="Smart Energy – Live", layout="wide")
+st.title("⚡ Smart Energy – Live")
 
-@st.cache_resource(show_spinner=False)
-def get_consumer():
-    # stała grupa = stabilne offsety
+@st.cache_resource
+def get_alerts_consumer():
     return KafkaConsumer(
-        TOPIC,
+        ALERTS_TOPIC,
         bootstrap_servers=BOOTSTRAP,
-        group_id="ui-dashboard",
-        enable_auto_commit=True,
         auto_offset_reset="latest",
+        enable_auto_commit=True,
         value_deserializer=lambda v: json.loads(v.decode("utf-8")),
-        key_deserializer=lambda k: k.decode("utf-8") if k else None,
-        consumer_timeout_ms=1000,
+        consumer_timeout_ms=800,
     )
 
-consumer = get_consumer()
-
-# stan
-if "df" not in st.session_state:
-    st.session_state.df = pd.DataFrame(columns=["ts","household_id","kwh","rule","mode"])
-lock = threading.Lock()
-
-def poll_loop():
-    while True:
-        try:
-            pack = consumer.poll(timeout_ms=500)
-            rows = []
-            for _, recs in pack.items():
-                for rec in recs:
-                    val = rec.value or {}
-                    try:
-                        ts_raw = val.get("window_end") or val.get("window_start")
-                        ts = pd.to_datetime(ts_raw, utc=True)
-                        rows.append({
-                            "ts": ts,
-                            "household_id": val.get("household_id"),
-                            "kwh": float(val.get("kwh", 0.0)),
-                            "rule": val.get("rule"),
-                            "mode": val.get("mode"),
-                        })
-                    except Exception:
-                        continue
-            if rows:
-                with lock:
-                    df = pd.concat([st.session_state.df, pd.DataFrame(rows)], ignore_index=True)
-                    if len(df) > MAX_ROWS:
-                        df = df.iloc[-MAX_ROWS:]
-                    st.session_state.df = df
-        except Exception:
-            time.sleep(1)
-
-# start czytnika 1x
-if "poll_started" not in st.session_state:
-    threading.Thread(target=poll_loop, daemon=True).start()
-    st.session_state.poll_started = True
+@st.cache_resource
+def get_readings_consumer():
+    # readings są w CSV: timestamp,household_id,energy_kwh
+    return KafkaConsumer(
+        READINGS_TOPIC,
+        bootstrap_servers=BOOTSTRAP,
+        auto_offset_reset="latest",
+        enable_auto_commit=True,
+        value_deserializer=lambda v: v.decode("utf-8"),
+        consumer_timeout_ms=800,
+    )
 
 with st.sidebar:
-    st.subheader("Ustawienia")
-    st.write(f"**BOOTSTRAP_SERVERS**: `{BOOTSTRAP}`")
-    st.write(f"**ALERTS_TOPIC**: `{TOPIC}`")
-    st.write(f"**MAX_ROWS**: `{MAX_ROWS}`")
-    st.caption("Dane odświeżają się w tle; UI odświeża się co ~1 s.")
+    st.markdown(f"**Kafka**: `{BOOTSTRAP}`")
+    st.markdown(f"**Alerts topic**: `{ALERTS_TOPIC}`")
+    st.markdown(f"**Readings topic**: `{READINGS_TOPIC}`")
+    st.caption("Auto-refresh ~1s; buforujemy ostatnie rekordy.")
 
-placeholder_kpi = st.empty()
-placeholder_chart = st.empty()
-placeholder_table = st.empty()
+tab_alerts, tab_readings = st.tabs(["🚨 Alerts", "📈 Readings"])
 
-def render():
-    with lock:
-        df = st.session_state.df.copy()
+alerts_consumer = get_alerts_consumer()
+readings_consumer = get_readings_consumer()
 
-    now = pd.Timestamp.utcnow()
-    df5 = df[df["ts"] >= (now - pd.Timedelta(minutes=5))]
-    df15 = df[df["ts"] >= (now - pd.Timedelta(minutes=15))]
+alerts_buf, readings_buf = [], []
+alert_ph = tab_alerts.empty()
+read_ph = tab_readings.empty()
+chart_ph = tab_readings.empty()
 
-    k1,k2,k3,k4 = placeholder_kpi.columns(4)
-    k1.metric("Alerts (5 min)", f"{len(df5):,}")
-    k2.metric("Unikalne gospodarstwa (5 min)", f"{df5['household_id'].nunique():,}" if len(df5) else "0")
-    k3.metric("Średnie kWh (5 min)", f"{df5['kwh'].mean():.3f}" if len(df5) else "—")
-    k4.metric("Ostatni event (UTC)", df["ts"].max().strftime("%Y-%m-%d %H:%M:%S") if len(df) else "—")
-
-    placeholder_chart.subheader("Suma kWh / min (ostatnie 15 min)")
-    if len(df15):
-        series = (df15.set_index("ts").sort_index().resample("1min")["kwh"].sum()
-                  .rename("sum_kwh").reset_index().set_index("ts"))
-        placeholder_chart.line_chart(series)
-    else:
-        placeholder_chart.info("Brak danych do wykresu jeszcze…")
-
-    if len(df):
-        cols = ["ts","household_id","kwh","rule","mode"]
-        placeholder_table.subheader("Ostatnie alerty (200)")
-        placeholder_table.dataframe(df.sort_values("ts").tail(200)[cols], use_container_width=True)
-    else:
-        placeholder_table.empty()
+def readings_row(line: str):
+    # oczekujemy: 2025-09-06T17:54:02+00:00,H001,0.05251
+    parts = [p.strip() for p in line.split(",")]
+    if len(parts) != 3:
+        return None
+    ts, hh, val = parts
+    try:
+        return {"timestamp": ts, "household_id": hh, "energy_kwh": float(val)}
+    except Exception:
+        return None
 
 while True:
-    render()
+    # pull alerts
+    for recs in alerts_consumer.poll(timeout_ms=400).values():
+        for rec in recs:
+            alerts_buf.append(rec.value)
+    alerts_buf = alerts_buf[-MAX_ROWS:]
+
+    # pull readings
+    for recs in readings_consumer.poll(timeout_ms=400).values():
+        for rec in recs:
+            row = readings_row(rec.value)
+            if row:
+                readings_buf.append(row)
+    readings_buf = readings_buf[-MAX_ROWS:]
+
+    # render ALERTS
+    if alerts_buf:
+        df = pd.DataFrame(alerts_buf)
+        cols = [c for c in ["household_id","window_start","window_end","kwh","rule","mode"] if c in df.columns]
+        if cols:
+            alert_ph.dataframe(df[cols].tail(60), use_container_width=True)
+        else:
+            alert_ph.info("Brak poprawnych kolumn w alertach (czekam na JSON).")
+    else:
+        alert_ph.info("Czekam na alerty… (upewnij się, że `ALERTS_CONSOLE=0` i Spark pisze do Kafki)")
+
+    # render READINGS + mini-wykres
+    if readings_buf:
+        rdf = pd.DataFrame(readings_buf)
+        read_ph.dataframe(rdf.tail(80), use_container_width=True)
+
+        # prosty wykres: liczba odczytów / minuta
+        try:
+            r = rdf.copy()
+            r["minute"] = r["timestamp"].str.slice(0,16)  # YYYY-MM-DDTHH:MM
+            cnt = r.groupby("minute").size().reset_index(name="count").sort_values("minute")
+            chart_ph.line_chart(cnt.set_index("minute"))
+        except Exception:
+            pass
+    else:
+        read_ph.info("Czekam na odczyty…")
+
     time.sleep(1)
