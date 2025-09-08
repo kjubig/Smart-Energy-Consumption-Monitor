@@ -1,6 +1,8 @@
 # Smart Energy Consumption Monitor
 
-> End-to-end system do strumieniowego monitoringu zużycia energii: **Producer → Kafka → Spark (Structured Streaming) → Kafka (alerty) → Streamlit UI**. Uruchamiane jednym `docker compose` na **AWS EC2** (lub lokalnie).
+**Autorzy:** Łukasz Kubik 193178 & Nikodem Kozak 193388 (ACiR KSD)
+
+> System do strumieniowego monitoringu zużycia energii: **Producer → Kafka → Spark (Structured Streaming) → Kafka (alerty) → Streamlit UI**. Uruchamiane jednym `docker compose` na **AWS EC2** (lub lokalnie).
 
 ---
 
